@@ -1,0 +1,90 @@
+---
+name: hermes-dashboard-plugin
+description: 开发 Hermes web dashboard 插件（自定义 tab/可视化）的完整流程与踩坑记录。
+platforms: [windows, linux, macos]
+---
+
+# Hermes Dashboard 插件开发
+
+开发 `hermes dashboard`（web 管理面板）的自定义插件：新增 tab、可视化面板、读 Hermes 内部数据。
+
+## 触发场景
+
+- 用户要做 dashboard 自定义 tab / 可视化 UI / 数据面板
+- 需要把 kanban / 子代理 / 会话数据可视化
+- 想扩展 Hermes web dashboard 而不 fork 代码
+
+## 插件结构
+
+```
+~/.hermes/plugins/<name>/
+└── dashboard/
+    ├── manifest.json        # 必需：tab 配置、入口、api 声明
+    ├── dist/
+    │   ├── index.js         # 必需：IIFE JS bundle（无构建步骤）
+    │   └── style.css        # 可选：自定义样式
+    └── plugin_api.py        # 可选：FastAPI 后端路由（挂 /api/plugins/<name>/）
+```
+
+## 关键步骤
+
+1. **manifest.json**：
+   ```json
+   {
+     "name": "my-plugin", "label": "显示名", "icon": "Activity",
+     "tab": { "path": "/my-plugin", "position": "after:sessions" },
+     "entry": "dist/index.js", "css": "dist/style.css", "api": "plugin_api.py"
+   }
+   ```
+   icon 用 Lucide 名称（Activity/BarChart3/Database/Globe/Zap 等）。
+
+2. **前端 index.js**（IIFE，用 `window.__HERMES_PLUGIN_SDK__`，不 import React）：
+   ```js
+   const SDK = window.__HERMES_PLUGIN_SDK__;
+   const { React } = SDK;
+   const { useState, useEffect, useCallback } = SDK.hooks;
+   const { Card, CardHeader, CardTitle, CardContent, Badge, Button, Tabs, TabsList, TabsTrigger } = SDK.components;
+   function MyPage() { return React.createElement(Card, null, ...); }
+   window.__HERMES_PLUGINS__.register("my-plugin", MyPage);
+   ```
+
+3. **后端 plugin_api.py**：导出 `router = APIRouter()`，路由自动挂 `/api/plugins/<name>/`。可 `from hermes_cli.config import load_config`、`from hermes_state import SessionDB` 直接读 Hermes 内部。
+
+4. **启用插件**：必须在 `config.yaml` 的 `plugins.enabled` 列表中加入插件名，否则 dashboard 不加载（#46435 门禁）。**不要用 `hermes config set plugins.enabled '["x"]'`——会把列表存成字符串**；用 Python yaml 直接改：
+   ```python
+   import yaml; p=r'C:\Users\Administrator\AppData\Local\hermes\config.yaml'
+   cfg=yaml.safe_load(open(p,encoding='utf-8')); cfg.setdefault('plugins',{})['enabled']=['agent-viz']
+   yaml.safe_dump(cfg,open(p,'w',encoding='utf-8'),allow_unicode=True,sort_keys=False)
+   ```
+
+5. **启动 dashboard**：如果从桌面 App 环境启动，必须先 unset 桌面变量否则加载桌面 UI 而非管理面板：
+   ```bash
+   unset HERMES_DESKTOP HERMES_WEB_DIST HERMES_SERVE_HEADLESS && hermes dashboard
+   ```
+
+## 数据源（读 Hermes 内部）
+
+| 数据 | 路径/API | 用途 |
+|---|---|---|
+| Kanban 任务 | `~/.hermes/kanban.db` 表 `tasks`/`task_links`/`task_events` | 任务看板、拓扑图 |
+| 子代理实时日志 | `~/.hermes/cache/delegation/live/<deleg>/task-N.log` + `manifest.json` | 消息流/活动流 |
+| 会话记录 | `~/.hermes/state.db` 表 `sessions`/`messages` | 会话活动 |
+| 环境 | `HERMES_HOME`（Windows 默认 `%LOCALAPPDATA%\hermes`） | 路径解析 |
+
+live_transcripts 日志格式：`HH:MM:SS <type> | <content>`，type ∈ kickoff/user/start/think/tool/result/complete。
+
+## 坑（务必记住）
+
+1. **SDK 的 Tabs 是 render-prop 模式**：`Tabs` 的 children 是函数 `(value, setValue) => JSX`，用 `defaultValue` 初始化；`TabsTrigger` 用 `active={value===x}` + `onClick` 切换。**不要**用常规受控组件写法（`value`/`onValueChange`）——会导致整个 dashboard SPA 崩溃（白屏）。
+2. **用户插件必须进 `plugins.enabled`**，否则 404 "Plugin not found"。
+3. **`hermes config set` 数组会存成字符串**（`'["a"]'` 而非 YAML 列表），用 Python yaml 直接改。
+4. **桌面 App 环境变量劫持**：`HERMES_DESKTOP=1` + `HERMES_WEB_DIST`（app.asar 路径）会让 `hermes dashboard` 加载桌面前端（报 "Desktop IPC bridge is unavailable"，issue #52945）。unset 三个变量即可。
+5. **后端 500 常见原因**：混合类型排序（Unix 时间戳 int vs 字符串），统一 strftime 转字符串再排。
+6. 插件 API 有 auth 门禁：curl 会 401，浏览器会话里 `SDK.fetchJSON` 正常。测试用浏览器 console 的 `window.__HERMES_PLUGIN_SDK__.fetchJSON(...)`。
+
+## 验证
+
+1. `node --check dist/index.js` + Python `ast.parse` 语法检查
+2. 重启 dashboard，浏览器开 `http://127.0.0.1:9119/<tab-path>`
+3. 浏览器 console 调 `SDK.fetchJSON('/api/plugins/<name>/health')` 验证后端
+4. 检查 `document.querySelector('#root')` 非空（SPA 没崩）
