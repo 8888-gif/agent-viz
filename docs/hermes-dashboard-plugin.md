@@ -81,6 +81,26 @@ live_transcripts 日志格式：`HH:MM:SS <type> | <content>`，type ∈ kickoff
 4. **桌面 App 环境变量劫持**：`HERMES_DESKTOP=1` + `HERMES_WEB_DIST`（app.asar 路径）会让 `hermes dashboard` 加载桌面前端（报 "Desktop IPC bridge is unavailable"，issue #52945）。unset 三个变量即可。
 5. **后端 500 常见原因**：混合类型排序（Unix 时间戳 int vs 字符串），统一 strftime 转字符串再排。
 6. 插件 API 有 auth 门禁：curl 会 401，浏览器会话里 `SDK.fetchJSON` 正常。测试用浏览器 console 的 `window.__HERMES_PLUGIN_SDK__.fetchJSON(...)`。
+7. **插件后端调 LLM**：`PluginLlm` 需要 PluginContext（路由拿不到），直接用底层同步函数：
+   ```python
+   from agent.auxiliary_client import call_llm
+   resp = call_llm(task=None, provider=cfg.get("provider","deepseek"), model=cfg.get("default"),
+                   base_url=cfg.get("base_url"), api_key=os.environ.get("DEEPSEEK_API_KEY"),
+                   messages=[...], temperature=0.1, max_tokens=300)
+   ```
+   - **返回类型是 OpenAI ChatCompletion**：取文本用 `resp.choices[0].message.content`（不是 `resp.content`！那是 None）。
+   - **不要用 `task="vision"` 等辅助任务名**——那些走 openrouter/nous 辅助 provider（未配置会报 "No LLM provider configured"）；显式传主配置的 provider/model/api_key。
+   - 从 `config.yaml` 的 `model:` 段读主配置（pyyaml），`DEEPSEEK_API_KEY` 从 .env 读。
+   - **LLM 输出 JSON 解析要鲁棒**：用 `json.JSONDecoder().raw_decode` 逐位置扫描，不要用贪婪正则 `\{.*\}`（LLM 常在 JSON 后加解释文字导致 `Extra data` 错误）。
+   - 同步调用会阻塞事件循环 → 用 `asyncio.to_thread` 或在 FastAPI 里直接跑（简单场景可接受）。
+8. **CSV 导出注意**：
+   - **HTTP 头不能含中文文件名**（latin-1 编码限制）→ 用 ASCII 文件名 + `filename*=UTF-8''` 或干脆全 ASCII：`scraper_export_20260803_111326.csv`。
+   - **Excel 中文乱码** → 加 BOM：`"\ufeff" + csv_content`。
+   - 返回用 `fastapi.responses.Response(content=..., media_type="text/csv; charset=utf-8", headers={"Content-Disposition": ...})`。
+   - 前端下载按钮用 `<a href="/api/plugins/<name>/export" download>`。
+9. **用户可配置路径**：不要硬编码数据目录。存插件自己的 `config.json`（`Path(__file__).resolve().parent / "config.json"`），提供 GET/POST `/xxx-config` 端点（POST 校验 `Path(p).exists() and is_dir()`），前端渲染设置面板。文件用 `Path(__file__)` 定位——**注意插件物理路径可能是 junction 指向 D:\hermes-data**。
+10. **SDK.fetchJSON POST**：**必须显式传 `headers: {"Content-Type": "application/json"}`**，否则 body 被当字符串 → 后端 422 "Input should be a valid dictionary"。
+11. **React.createElement 三元表达式**：`cond ? createElement(...) : null` —— `:` 不能省！漏了会报 `Unexpected token ','`，且错误位置可能指向**下一行**（解析器恢复点），排错时检查整个 JSX 块而不是只看报错行。
 
 ## 验证
 
