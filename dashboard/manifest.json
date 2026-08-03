@@ -1,0 +1,14 @@
+{
+  "name": "agent-viz",
+  "label": "Agent 协作",
+  "description": "多 Agent 协作可视化：任务看板、实时状态、活动流",
+  "icon": "Activity",
+  "version": "1.0.0",
+  "tab": {
+    "path": "/agent-viz",
+    "position": "after:sessions"
+  },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}
